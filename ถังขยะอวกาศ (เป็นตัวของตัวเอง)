@@ -1,0 +1,215 @@
+//เป็นตัวของตัวเอง
+#include <Servo.h>
+#include "HX711.h"
+#include <MD_Parola.h>
+#include <MD_MAX72XX.h>
+#include <SPI.h>
+
+// กำหนดขาเชื่อมต่อ
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES 4
+#define DATA_PIN 13
+#define CLK_PIN 11
+#define CS_PIN 12
+
+// สร้างอินสแตนซ์ของ MD_Parola
+MD_Parola matrixDisplay = MD_Parola(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
+
+// เซอร์โว
+Servo myservo1; // เซอร์โวตัวที่ 1 (หักลง)
+Servo myservo2; // เซอร์โวตัวที่ 2 (หมุนองศา)
+
+// เครื่องชั่งน้ำหนัก
+#define DOUT  A1
+#define CLK   A0
+HX711 scale(DOUT, CLK);
+float calibration_factor = 307939.00; // ค่าปรับแต่งของคุณ
+#define zero_factor 8388652
+
+// Proximity Sensor และ IR Sensor
+#define PROXIMITY_PIN 5 // ขาที่เชื่อมต่อกับ Proximity Sensor
+#define IR_PIN 50 // ขาที่เชื่อมต่อกับ IR Sensor
+
+// ปุ่มกด
+#define BUTTON_YELLOW_PIN 15 // ขาที่เชื่อมต่อกับปุ่มสีเหลือง
+#define BUTTON_GREEN_PIN 14  // ขาที่เชื่อมต่อกับปุ่มสีเขียว
+
+// ตัวแปรนับจำนวนขวด
+int glassBottleCount = 0;
+int plasticBottleCount = 0;
+int metalBottleCount = 0;
+
+// ค่าเริ่มต้นของเซอร์โว
+int servo1StartPos = 50;
+int servo2StartPos = 80;
+
+// ตัวแปรสถานะโหมด
+enum Mode { IDLE, POUR_MODE, DETECT_MODE };
+Mode currentMode = IDLE;
+
+void setup() {
+  // ตั้งค่าเซอร์โว
+  myservo1.attach(3);  // ขาเชื่อมต่อของเซอร์โวตัวที่ 1
+  myservo2.attach(4);  // ขาเชื่อมต่อของเซอร์โวตัวที่ 2
+  myservo1.write(servo1StartPos);
+  myservo2.write(servo2StartPos);
+
+  // ตั้งค่าเครื่องชั่งน้ำหนัก
+  Serial.begin(9600);
+  scale.set_scale(calibration_factor);
+
+  // ตั้งค่า Proximity Sensor และ IR Sensor
+  pinMode(PROXIMITY_PIN, INPUT);
+  pinMode(IR_PIN, INPUT);
+
+  // ตั้งค่าปุ่มกด
+  pinMode(BUTTON_YELLOW_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_GREEN_PIN, INPUT_PULLUP);
+
+  // ตั้งค่าหน้าจอ MAX7219
+  matrixDisplay.begin();
+  matrixDisplay.setIntensity(8); // ปรับความสว่างของหน้าจอ
+  matrixDisplay.displayClear();
+
+  // แสดงข้อความเริ่มต้น
+  displayMessage("Waiting");
+}
+
+void displayMessage(String message) {
+  matrixDisplay.displayClear();
+  matrixDisplay.print(message);
+}
+
+void runPourMode() {
+  // ฟังก์ชันสำหรับการเทขวด
+  myservo1.write(50);   // 1 รับขวด
+  delay(3000);
+  myservo1.write(60);   // 1 วัดน้ำหนัก
+  delay(3000);
+  myservo1.write(50);   // 1 ยกขึ้นเตรียมหมุน
+  delay(3000);
+  myservo2.write(30);   // 2 ถังขวา
+  delay(3000);
+  myservo1.write(120);   // 1 เท
+  for (int i = 0; i < 10; i++) {
+        myservo2.write(25);  // หมุนไปที่ 75 องศา
+        delay(200);         // รอ 1 วินาที
+        myservo2.write(35);  // หมุนไปที่ 85 องศา
+        delay(200);     
+      }
+  delay(3000);
+  myservo1.write(50);   // 1 ยกขึ้นเตรียมหมุน
+  delay(3000);
+  myservo2.write(150);   // 2 ถังซ้าย
+  delay(3000);
+  myservo1.write(100);   // 1 เท
+  delay(3000);
+  for (int i = 0; i < 10; i++) {
+        myservo2.write(145);  // หมุนไปที่ 75 องศา
+        delay(200);         // รอ 1 วินาที
+        myservo2.write(155);  // หมุนไปที่ 85 องศา
+        delay(200);     
+      }
+  myservo1.write(50);   // 1 ยกขึ้นเตรียมหมุน
+  delay(3000);
+  myservo2.write(80);   // 2 ถังกลาง
+  delay(3000);
+  myservo1.write(100);   // 1 เท
+  for (int i = 0; i < 10; i++) {
+        myservo2.write(75);  // หมุนไปที่ 75 องศา
+        delay(200);         // รอ 1 วินาที
+        myservo2.write(85);  // หมุนไปที่ 85 องศา
+        delay(200);     
+      }
+  delay(3000);
+  myservo1.write(50);   // 1 ยกขึ้นเตรียมหมุน
+  delay(3000);
+}
+
+void runDetectMode() {
+  myservo1.write(servo1StartPos);
+  myservo2.write(servo2StartPos);
+
+  // อ่านข้อมูลจาก IR Sensor
+  bool objectDetected = digitalRead(IR_PIN) == LOW;
+
+  if (objectDetected) {
+    displayMessage("Progress");
+    Serial.println("Object detected");
+    delay(1000);
+
+    myservo1.write(60);   // 1 วัดน้ำหนัก
+    delay(3000);
+
+    float finalWeight = scale.get_units() * 0.453592; // อ่านค่าน้ำหนักจากเครื่องชั่ง
+    Serial.print("Weight: ");
+    Serial.println(finalWeight); // แสดงค่าน้ำหนักที่วัดได้ใน Serial Monitor
+
+    myservo1.write(50);   // 1 ยกขึ้นเตรียมหมุน
+    delay(1000);
+
+    bool isMetal = digitalRead(PROXIMITY_PIN);
+
+    if (isMetal) {
+      displayMessage("Metal");
+      Serial.println("Metal bottle detected");
+
+      for (int i = 0; i < 10; i++) {
+        myservo1.write(100);
+        myservo2.write(75);  // หมุนไปที่ 75 องศา
+        delay(200);         // รอ 1 วินาที
+        myservo2.write(85);  // หมุนไปที่ 85 องศา
+        delay(200);     
+        myservo2.write(80);
+      }
+
+      metalBottleCount++;
+
+    } else {
+      displayMessage("Plastic");
+      Serial.println("Plastic bottle detected");
+
+      for (int i = 0; i < 10; i++) {
+        myservo1.write(100);
+        myservo2.write(145);  // หมุนไปที่ 145 องศา
+        delay(200);           // รอ 200 ms
+        myservo2.write(155);  // หมุนไปที่ 155 องศา
+        delay(200); 
+      }
+      plasticBottleCount++;
+
+    } 
+
+    myservo1.write(servo1StartPos);
+    delay(500);
+    myservo2.write(servo2StartPos);
+    delay(500);
+    displayMessage("Waiting");
+  } 
+  
+  delay(500);
+}
+
+void loop() {
+  // ตรวจสอบการกดปุ่ม
+  if (digitalRead(BUTTON_YELLOW_PIN) == LOW) {
+    currentMode = POUR_MODE;
+    delay(200); // ดีเลย์เล็กน้อยเพื่อป้องกันการกดปุ่มซ้ำ
+  } else if (digitalRead(BUTTON_GREEN_PIN) == LOW) {
+    currentMode = DETECT_MODE;
+    delay(200);
+  }
+
+  // รันโหมดที่เลือก
+  switch (currentMode) {
+    case POUR_MODE:
+      runPourMode();
+      break;
+    case DETECT_MODE:
+      runDetectMode();
+      break;
+    default:
+      displayMessage("Waiting");
+      break;
+  }
+}
